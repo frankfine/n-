@@ -128,35 +128,9 @@
     let playerInterval;
     let aiInterval;
 
-    // 优先队列类，用于 A* 路径优化
-    class PriorityQueue {
-      constructor() {
-        this.items = [];
-      }
-
-      enqueue(item, priority) {
-        this.items.push({ item, priority });
-        this.items.sort((a, b) => a.priority - b.priority);
-      }
-
-      dequeue() {
-        return this.items.shift().item;
-      }
-
-      isEmpty() {
-        return this.items.length === 0;
-      }
-    }
-
-    // 曼哈顿距离
+    // 辅助函数：计算曼哈顿距离
     function manhattan(a, b) {
       return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
-    }
-
-    // 更新分数显示
-    function updateScores() {
-      playerScoreDisplay.textContent = playerScore;
-      aiScoreDisplay.textContent = aiScore;
     }
 
     // 游戏开始
@@ -262,79 +236,163 @@
       ctx.fillRect(food.x * gridSize, food.y * gridSize, gridSize, gridSize);
     }
 
-    // A* 算法实现（优化）
-    function astarOptimized(start, target) {
-      const openSet = new PriorityQueue();
-      openSet.enqueue(start, 0);
-      const cameFrom = {};
-      const gScore = {};
-      const fScore = {};
+    // ---------------------------
+    // AI 控制部分：采用 A* 算法+安全检测（绝不撞墙）
+    // ---------------------------
+    function moveAI() {
+      const head = aiSnake[0];
+      const currentDistance = manhattan(head, food);
+      const path = astar(head, food);
+      if (path && path.length > 0) {
+        const nextDir = path[0];
+        // 模拟下一步的位置
+        let newHead = { x: head.x, y: head.y };
+        switch (nextDir) {
+          case 'LEFT': newHead.x--; break;
+          case 'RIGHT': newHead.x++; break;
+          case 'UP': newHead.y--; break;
+          case 'DOWN': newHead.y++; break;
+        }
+        // 若下一步安全且能使距离变短，则采用该方向
+        const newDistance = manhattan(newHead, food);
+        if (newDistance < currentDistance && isValidMove(newHead)) {
+          aiDirection = nextDir;
+          return;
+        }
+      }
+      // 如果上述方向无效，则采用备用安全策略，确保不会撞墙
+      fallbackSafeMove(head);
+    }
 
-      gScore[`${start.x},${start.y}`] = 0;
-      fScore[`${start.x},${start.y}`] = heuristic(start, target);
+    // 安全随机选择一个方向（确保不会撞墙或撞到 AI 自己）
+    function fallbackSafeMove(head) {
+      const possibleDirections = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+      let safeMoves = possibleDirections.filter(dir => {
+        let newHead = { x: head.x, y: head.y };
+        switch(dir) {
+          case 'LEFT': newHead.x--; break;
+          case 'RIGHT': newHead.x++; break;
+          case 'UP': newHead.y--; break;
+          case 'DOWN': newHead.y++; break;
+        }
+        return isValidMove(newHead);
+      });
+      if (safeMoves.length > 0) {
+        aiDirection = safeMoves[Math.floor(Math.random() * safeMoves.length)];
+      }
+    }
 
-      while (!openSet.isEmpty()) {
-        const current = openSet.dequeue();
+    // A* 算法实现
+    function astar(start, target) {
+      // 将节点转换为字符串，作为哈希键
+      function hash(node) {
+        return node.x + ',' + node.y;
+      }
+      // 启发函数：曼哈顿距离
+      function heuristic(a, b) {
+        return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
+      }
+      // 获取相邻且不为障碍的节点
+      function getNeighbors(node) {
+        const dirs = [
+          { dx: 0, dy: -1 },
+          { dx: 0, dy: 1 },
+          { dx: -1, dy: 0 },
+          { dx: 1, dy: 0 }
+        ];
+        let result = [];
+        for (let d of dirs) {
+          let nx = node.x + d.dx;
+          let ny = node.y + d.dy;
+          if (nx >= 0 && nx < tileCount && ny >= 0 && ny < tileCount) {
+            if (!isObstacle({ x: nx, y: ny })) {
+              result.push({ x: nx, y: ny });
+            }
+          }
+        }
+        return result;
+      }
+
+      let openSet = new Set();
+      let openList = [];
+      let cameFrom = {};  // key: "x,y"  value: 父节点
+      let gScore = {};    // key: "x,y"  value: 起点到该节点的代价
+      let fScore = {};    // key: "x,y"  value: gScore + 启发值
+
+      for (let y = 0; y < tileCount; y++) {
+        for (let x = 0; x < tileCount; x++) {
+          const key = x + ',' + y;
+          gScore[key] = Infinity;
+          fScore[key] = Infinity;
+        }
+      }
+
+      const startKey = hash(start);
+      gScore[startKey] = 0;
+      fScore[startKey] = heuristic(start, target);
+      openSet.add(startKey);
+      openList.push(start);
+
+      while (openSet.size > 0) {
+        let current, currentKey;
+        let bestF = Infinity;
+        for (let node of openList) {
+          let key = hash(node);
+          if (openSet.has(key) && fScore[key] < bestF) {
+            bestF = fScore[key];
+            current = node;
+            currentKey = key;
+          }
+        }
         if (current.x === target.x && current.y === target.y) {
           return reconstructPath(cameFrom, current);
         }
-
-        const neighbors = getNeighbors(current);
+        openSet.delete(currentKey);
+        openList = openList.filter(n => hash(n) !== currentKey);
+        let neighbors = getNeighbors(current);
         for (let neighbor of neighbors) {
-          const tentativeGScore = gScore[`${current.x},${current.y}`] + 1;
-          if (tentativeGScore < (gScore[`${neighbor.x},${neighbor.y}`] || Infinity)) {
-            cameFrom[`${neighbor.x},${neighbor.y}`] = current;
-            gScore[`${neighbor.x},${neighbor.y}`] = tentativeGScore;
-            fScore[`${neighbor.x},${neighbor.y}`] = tentativeGScore + heuristic(neighbor, target);
-            openSet.enqueue(neighbor, fScore[`${neighbor.x},${neighbor.y}`]);
+          let neighborKey = hash(neighbor);
+          let tentative_gScore = gScore[currentKey] + 1;
+          if (tentative_gScore < gScore[neighborKey]) {
+            cameFrom[neighborKey] = current;
+            gScore[neighborKey] = tentative_gScore;
+            fScore[neighborKey] = tentative_gScore + heuristic(neighbor, target);
+            if (!openSet.has(neighborKey)) {
+              openSet.add(neighborKey);
+              openList.push(neighbor);
+            }
           }
         }
       }
-
-      return null;
+      return null; // 如果无法到达目标则返回 null
     }
 
-    // 启发函数：使用欧几里得距离
-    function heuristic(a, b) {
-      return Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
-    }
-
-    // 获取邻居节点
-    function getNeighbors(node) {
-      const dirs = [
-        { dx: 0, dy: -1 },
-        { dx: 0, dy: 1 },
-        { dx: -1, dy: 0 },
-        { dx: 1, dy: 0 }
-      ];
-      let result = [];
-      for (let d of dirs) {
-        let nx = node.x + d.dx;
-        let ny = node.y + d.dy;
-        if (nx >= 0 && nx < tileCount && ny >= 0 && ny < tileCount) {
-          if (!isObstacle({ x: nx, y: ny })) {
-            result.push({ x: nx, y: ny });
-          }
-        }
-      }
-      return result;
-    }
-
-    // 重构路径
+    // 重构路径，将节点序列转换为方向数组（例如 ['UP', 'LEFT', ...]）
     function reconstructPath(cameFrom, current) {
-      const directions = [];
-      while (cameFrom.hasOwnProperty(`${current.x},${current.y}`)) {
-        const prev = cameFrom[`${current.x},${current.y}`];
-        if (prev.x === current.x + 1) directions.push('RIGHT');
-        else if (prev.x === current.x - 1) directions.push('LEFT');
-        else if (prev.y === current.y + 1) directions.push('DOWN');
-        else if (prev.y === current.y - 1) directions.push('UP');
-        current = prev;
+      function hash(node) {
+        return node.x + ',' + node.y;
       }
-      return directions.reverse();
+      let totalPath = [current];
+      while (cameFrom.hasOwnProperty(hash(current))) {
+        current = cameFrom[hash(current)];
+        totalPath.unshift(current);
+      }
+      let directions = [];
+      for (let i = 0; i < totalPath.length - 1; i++) {
+        let cur = totalPath[i];
+        let nxt = totalPath[i + 1];
+        if (nxt.x === cur.x + 1) directions.push('RIGHT');
+        else if (nxt.x === cur.x - 1) directions.push('LEFT');
+        else if (nxt.y === cur.y + 1) directions.push('DOWN');
+        else if (nxt.y === cur.y - 1) directions.push('UP');
+      }
+      return directions;
     }
+    // ---------------------------
+    // AI 算法结束
+    // ---------------------------
 
-    // 判断是否有障碍（墙或AI自身）
+    // 判断一个格子是否为障碍（只考虑墙壁和 AI 自己的身体，不避开玩家蛇）
     function isObstacle(cell) {
       if (cell.x < 0 || cell.x >= tileCount || cell.y < 0 || cell.y >= tileCount) return true;
       for (let segment of aiSnake) {
@@ -343,7 +401,7 @@
       return false;
     }
 
-    // 判断一个格子是否为有效移动
+    // 检查移动是否有效（避免撞墙和撞到 AI 自己）
     function isValidMove(newHead) {
       if (newHead.x < 0 || newHead.x >= tileCount || newHead.y < 0 || newHead.y >= tileCount) {
         return false;
@@ -356,28 +414,15 @@
       return true;
     }
 
-    // AI 移动
-    function moveAI() {
-      const head = aiSnake[0];
-      const currentDistance = manhattan(head, food);
-      const path = astarOptimized(head, food);
-      if (path && path.length > 0) {
-        const nextDir = path[0];
-        let newHead = { x: head.x, y: head.y };
-        switch (nextDir) {
-          case 'LEFT': newHead.x--; break;
-          case 'RIGHT': newHead.x++; break;
-          case 'UP': newHead.y--; break;
-          case 'DOWN': newHead.y++; break;
-        }
-        aiDirection = nextDir;
-        return;
-      }
-    }
-
-    // 玩家移动
+    // 玩家移动（方向由键盘事件控制）
     function movePlayer() {
       updateSnake(playerSnake, playerDirection);
+    }
+
+    // 更新得分显示
+    function updateScores() {
+      playerScoreDisplay.textContent = playerScore;
+      aiScoreDisplay.textContent = aiScore;
     }
 
     // 显示游戏结束界面
@@ -388,6 +433,15 @@
       endScreen.style.display = 'block';
       const winner = gameOver ? "你输了" : "你赢了！";
       document.getElementById('endMessage').textContent = winner;
+      if (gameOver) {
+        document.getElementById('endMessage').style.color = 'red';
+        document.getElementById('endMessage').style.fontSize = '3em';
+        document.getElementById('endMessage').style.fontWeight = 'bold';
+      } else {
+        document.getElementById('endMessage').style.color = 'green';
+        document.getElementById('endMessage').style.fontSize = '3em';
+        document.getElementById('endMessage').style.fontWeight = 'bold';
+      }
     }
 
     // 重新开始游戏
